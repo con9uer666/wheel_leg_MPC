@@ -54,12 +54,18 @@ def parse_args():
     p.add_argument("--no-monitor", action="store_true",
                    help="Disable the terminal-side LQR state monitor "
                         "(enabled by default when viewer is up).")
-    p.add_argument("--controller", choices=["lqr", "mpc"], default="lqr",
-                   help="Controller to use: lqr (default, fixed gain from MATLAB) "
-                        "or mpc (online 20-step QP at 100 Hz).")
+    p.add_argument("--controller", choices=["lqr", "mpc", "mpc14"], default="lqr",
+                   help="Controller to use: lqr (fixed gain from MATLAB), "
+                        "mpc (10-state online QP @ 500 Hz), or "
+                        "mpc14 (14-state extended QP with leg-length in state).")
     p.add_argument("--config", type=str, default=None,
                    help="Path to a custom config.yaml. If omitted, the file "
                         "next to main.py is used. The choice is logged at startup.")
+    p.add_argument("--web-ui", action="store_true",
+                   help="Launch FastAPI + WebSocket UI on http://localhost:8000 "
+                        "for live reference setting (vx_ref, yaw_ref, L_ref, etc.).")
+    p.add_argument("--ui-port", type=int, default=8000,
+                   help="Port for the Web UI (default: 8000).")
     return p.parse_args()
 
 
@@ -76,7 +82,14 @@ def main():
 
     model_path = os.path.join(os.path.dirname(__file__), "models", "wheel_legged.xml")
 
-    if args.controller == "mpc":
+    if args.controller == "mpc14":
+        from controllers.mpc14 import MPC14Controller
+        print("Initialising MPC14 controller (14-state native OSQP, warm-up solve)…")
+        t_init = time.time()
+        controller = MPC14Controller()
+        print(f"MPC14 ready. N={controller.N}, DT={controller.DT}s "
+              f"({1/controller.DT:.0f} Hz),  init={time.time()-t_init:.2f}s")
+    elif args.controller == "mpc":
         from controllers.mpc10 import MPC10Controller
         print("Initialising MPC controller (native OSQP, warm-up solve)…")
         t_init = time.time()
@@ -92,6 +105,20 @@ def main():
 
     cmd = ControlCommand(vx_ref=args.vx_ref, h_ref=args.h_ref)
     runner = SimRunner(model_path, controller)
+
+    # ── Optional Web UI (FastAPI + WebSocket) ──────────────────────────
+    if args.web_ui:
+        import threading as _threading
+        from ui.server import start_server
+        _t = _threading.Thread(
+            target=start_server,
+            args=(cmd, runner.buf),
+            kwargs={"port": args.ui_port},
+            daemon=True,
+        )
+        _t.start()
+        print(f"Web UI: http://localhost:{args.ui_port}  "
+              f"(open in browser to drag sliders)")
 
     # ── Optional MuJoCo viewer ─────────────────────────────────────────
     viewer = None

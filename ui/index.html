@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Wheel-Leg MPC · 实时参考控制台</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #1e1e1e;
+    --fg: #e8e8e8;
+    --accent: #4ec9b0;
+    --muted: #888;
+    --grid: #303030;
+    --slider-track: #2a2a2a;
+    --slider-thumb: #4ec9b0;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 12px;
+    background: var(--bg); color: var(--fg);
+    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-size: 13px;
+  }
+  h1 { margin: 0 0 8px 0; font-size: 18px; }
+  #status { font-size: 11px; color: var(--muted); margin-bottom: 12px; }
+  #status.connected { color: var(--accent); }
+
+  .layout {
+    display: grid;
+    grid-template-columns: 320px 1fr;
+    gap: 16px;
+  }
+  .sliders {
+    background: #252525; border-radius: 6px; padding: 14px;
+  }
+  .charts {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+  .chart-card {
+    background: #252525; border-radius: 6px; padding: 10px;
+    height: 230px;
+  }
+  .chart-card h3 { margin: 0 0 4px 0; font-size: 12px; color: var(--accent); }
+  .chart-wrap { height: 195px; position: relative; }
+
+  .slider-row {
+    margin-bottom: 14px;
+  }
+  .slider-row label {
+    display: flex; justify-content: space-between;
+    margin-bottom: 4px; font-size: 12px;
+  }
+  .slider-row label .value {
+    color: var(--accent); font-family: ui-monospace, monospace;
+  }
+  .slider-row input[type=range] {
+    width: 100%; appearance: none;
+    background: var(--slider-track); height: 4px; border-radius: 2px;
+    outline: none;
+  }
+  .slider-row input[type=range]::-webkit-slider-thumb {
+    appearance: none;
+    width: 16px; height: 16px; border-radius: 50%;
+    background: var(--slider-thumb); cursor: pointer;
+    border: none;
+  }
+  .slider-row .range-hint {
+    font-size: 10px; color: var(--muted);
+    display: flex; justify-content: space-between;
+    margin-top: 2px;
+  }
+
+  .preset-buttons {
+    display: flex; flex-wrap: wrap; gap: 6px;
+    margin-top: 4px;
+  }
+  .preset-buttons button {
+    background: #333; color: var(--fg); border: 1px solid #444;
+    padding: 4px 10px; font-size: 11px; border-radius: 3px;
+    cursor: pointer;
+  }
+  .preset-buttons button:hover {
+    background: #404040; border-color: var(--accent);
+  }
+
+  hr { border: none; border-top: 1px solid var(--grid); margin: 14px 0; }
+</style>
+</head>
+<body>
+
+<h1>Wheel-Leg MPC · 实时参考控制台</h1>
+<div id="status">连接中…</div>
+
+<div class="layout">
+
+  <!-- ── Sliders ─────────────────────────────────────────────────────── -->
+  <div class="sliders">
+    <div class="slider-row">
+      <label>vx_ref <span class="value" id="v_vx">0.000</span> m/s</label>
+      <input type="range" id="s_vx" min="-2" max="2" step="0.01" value="0">
+      <div class="range-hint"><span>-2.0</span><span>+2.0</span></div>
+    </div>
+
+    <div class="slider-row">
+      <label>yaw_ref <span class="value" id="v_yaw">0.0</span> °</label>
+      <input type="range" id="s_yaw" min="-90" max="90" step="1" value="0">
+      <div class="range-hint"><span>-90°</span><span>+90°</span></div>
+    </div>
+
+    <div class="slider-row">
+      <label>h_ref <span class="value" id="v_h">0.210</span> m</label>
+      <input type="range" id="s_h" min="0.18" max="0.30" step="0.005" value="0.21">
+      <div class="range-hint"><span>0.18</span><span>0.30</span></div>
+    </div>
+
+    <hr>
+
+    <div class="slider-row">
+      <label>L_ref_l <span class="value" id="v_Ll">0.150</span> m</label>
+      <input type="range" id="s_Ll" min="0.14" max="0.18" step="0.001" value="0.15">
+      <div class="range-hint"><span>0.14</span><span>0.18</span></div>
+    </div>
+
+    <div class="slider-row">
+      <label>L_ref_r <span class="value" id="v_Lr">0.150</span> m</label>
+      <input type="range" id="s_Lr" min="0.14" max="0.18" step="0.001" value="0.15">
+      <div class="range-hint"><span>0.14</span><span>0.18</span></div>
+    </div>
+
+    <div class="preset-buttons">
+      <button onclick="presetL(0.15, 0.15)">齐平 0.15</button>
+      <button onclick="presetL(0.17, 0.17)">高 0.17</button>
+      <button onclick="presetL(0.14, 0.14)">矮 0.14</button>
+      <button onclick="presetL(0.17, 0.14)">左高右矮</button>
+      <button onclick="presetL(0.14, 0.17)">左矮右高</button>
+    </div>
+
+    <hr>
+
+    <div class="preset-buttons">
+      <button onclick="zeroAll()">全部归零</button>
+      <button onclick="dance()">扭一扭</button>
+    </div>
+  </div>
+
+  <!-- ── Charts ──────────────────────────────────────────────────────── -->
+  <div class="charts">
+    <div class="chart-card">
+      <h3>俯仰 θ_b (°)</h3>
+      <div class="chart-wrap"><canvas id="c_pitch"></canvas></div>
+    </div>
+    <div class="chart-card">
+      <h3>vx vs vx_ref (m/s)</h3>
+      <div class="chart-wrap"><canvas id="c_vx"></canvas></div>
+    </div>
+    <div class="chart-card">
+      <h3>yaw vs yaw_ref (°)</h3>
+      <div class="chart-wrap"><canvas id="c_yaw"></canvas></div>
+    </div>
+    <div class="chart-card">
+      <h3>腿长 L vs L_ref (m)</h3>
+      <div class="chart-wrap"><canvas id="c_L"></canvas></div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+// ── WebSocket connection ──────────────────────────────────────────────
+const status = document.getElementById('status');
+let ws = null;
+let pendingSend = null;
+
+function connect() {
+  ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.onopen = () => {
+    status.textContent = '已连接';
+    status.classList.add('connected');
+  };
+  ws.onclose = () => {
+    status.textContent = '已断开,3秒后重连…';
+    status.classList.remove('connected');
+    setTimeout(connect, 3000);
+  };
+  ws.onerror = () => {
+    status.textContent = '连接错误';
+  };
+  ws.onmessage = (e) => {
+    const data = JSON.parse(e.data);
+    if (data.kind === 'setpoints') {
+      // Initial setpoint sync from server
+      document.getElementById('s_vx').value  = data.vx_ref;
+      document.getElementById('s_yaw').value = data.yaw_ref * 180 / Math.PI;
+      document.getElementById('s_h').value   = data.h_ref;
+      document.getElementById('s_Ll').value  = data.L_ref_l;
+      document.getElementById('s_Lr').value  = data.L_ref_r;
+      updateValueLabels();
+    } else if (data.kind === 'status') {
+      // Push chart updates
+      pushPoint(charts.pitch, data.t, data.pitch);
+      pushPoint(charts.vx,    data.t, data.vx,      data.vx_ref);
+      pushPoint(charts.yaw,   data.t, data.yaw,     data.yaw_ref * 180 / Math.PI);
+      pushPoint(charts.L,     data.t, data.L_l,     data.L_ref_l, data.L_r, data.L_ref_r);
+    }
+  };
+}
+
+function sendSetpoints() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  const data = {
+    vx_ref:  parseFloat(document.getElementById('s_vx').value),
+    yaw_ref: parseFloat(document.getElementById('s_yaw').value) * Math.PI / 180,
+    h_ref:   parseFloat(document.getElementById('s_h').value),
+    L_ref_l: parseFloat(document.getElementById('s_Ll').value),
+    L_ref_r: parseFloat(document.getElementById('s_Lr').value),
+  };
+  ws.send(JSON.stringify(data));
+}
+
+function updateValueLabels() {
+  document.getElementById('v_vx').textContent  = (+document.getElementById('s_vx').value).toFixed(3);
+  document.getElementById('v_yaw').textContent = (+document.getElementById('s_yaw').value).toFixed(1);
+  document.getElementById('v_h').textContent   = (+document.getElementById('s_h').value).toFixed(3);
+  document.getElementById('v_Ll').textContent  = (+document.getElementById('s_Ll').value).toFixed(3);
+  document.getElementById('v_Lr').textContent  = (+document.getElementById('s_Lr').value).toFixed(3);
+}
+
+// ── Slider wiring ─────────────────────────────────────────────────────
+['s_vx', 's_yaw', 's_h', 's_Ll', 's_Lr'].forEach(id => {
+  document.getElementById(id).addEventListener('input', () => {
+    updateValueLabels();
+    sendSetpoints();
+  });
+});
+
+// ── Quick presets ─────────────────────────────────────────────────────
+function presetL(l, r) {
+  document.getElementById('s_Ll').value = l;
+  document.getElementById('s_Lr').value = r;
+  updateValueLabels();
+  sendSetpoints();
+}
+function zeroAll() {
+  document.getElementById('s_vx').value = 0;
+  document.getElementById('s_yaw').value = 0;
+  document.getElementById('s_h').value = 0.21;
+  document.getElementById('s_Ll').value = 0.15;
+  document.getElementById('s_Lr').value = 0.15;
+  updateValueLabels();
+  sendSetpoints();
+}
+let dancing = false;
+function dance() {
+  if (dancing) { dancing = false; return; }
+  dancing = true;
+  const t0 = performance.now() / 1000;
+  function tick() {
+    if (!dancing) return;
+    const t = performance.now() / 1000 - t0;
+    document.getElementById('s_Ll').value = 0.155 + 0.012 * Math.sin(t * 1.5);
+    document.getElementById('s_Lr').value = 0.155 - 0.012 * Math.sin(t * 1.5);
+    document.getElementById('s_yaw').value = 20 * Math.sin(t * 0.7);
+    updateValueLabels();
+    sendSetpoints();
+    requestAnimationFrame(tick);
+  }
+  tick();
+}
+
+// ── Charts ────────────────────────────────────────────────────────────
+const MAX_POINTS = 600;  // ~20 s at 30 Hz
+
+function makeChart(canvasId, lines, yAxisRange) {
+  const ctx = document.getElementById(canvasId).getContext('2d');
+  const datasets = lines.map(l => ({
+    label: l.label, data: [], borderColor: l.color,
+    borderWidth: 1.5, fill: false, tension: 0,
+    pointRadius: 0, borderDash: l.dash || []
+  }));
+  return new Chart(ctx, {
+    type: 'line',
+    data: { datasets },
+    options: {
+      animation: false,
+      parsing: false,
+      responsive: true, maintainAspectRatio: false,
+      scales: {
+        x: { type: 'linear', title: { display: false }, grid: { color: '#303030' },
+             ticks: { color: '#888', font: { size: 9 } } },
+        y: { ...yAxisRange, grid: { color: '#303030' },
+             ticks: { color: '#888', font: { size: 9 } } },
+      },
+      plugins: {
+        legend: { labels: { color: '#aaa', font: { size: 10 }, boxWidth: 16 },
+                  position: 'top' },
+        tooltip: { enabled: false }
+      }
+    }
+  });
+}
+
+const charts = {
+  pitch: makeChart('c_pitch', [{ label: 'θ_b', color: '#4ec9b0' }],
+                   { suggestedMin: -10, suggestedMax: 10 }),
+  vx:    makeChart('c_vx',    [{ label: 'vx', color: '#4ec9b0' },
+                               { label: 'vx_ref', color: '#ff8a4c', dash: [4,4] }],
+                   { suggestedMin: -1, suggestedMax: 1 }),
+  yaw:   makeChart('c_yaw',   [{ label: 'yaw', color: '#4ec9b0' },
+                               { label: 'yaw_ref', color: '#ff8a4c', dash: [4,4] }],
+                   { suggestedMin: -90, suggestedMax: 90 }),
+  L:     makeChart('c_L',     [{ label: 'L_l', color: '#4ec9b0' },
+                               { label: 'L_ref_l', color: '#4ec9b0', dash: [4,4] },
+                               { label: 'L_r', color: '#dcdcaa' },
+                               { label: 'L_ref_r', color: '#dcdcaa', dash: [4,4] }],
+                   { suggestedMin: 0.13, suggestedMax: 0.18 }),
+};
+
+function pushPoint(chart, t, a, b = undefined, c = undefined, d = undefined) {
+  const xs = [a, b, c, d];
+  for (let i = 0; i < chart.data.datasets.length; i++) {
+    const v = xs[i];
+    if (v === undefined) continue;
+    chart.data.datasets[i].data.push({ x: t, y: v });
+    if (chart.data.datasets[i].data.length > MAX_POINTS) {
+      chart.data.datasets[i].data.shift();
+    }
+  }
+  chart.update('none');
+}
+
+// ── Boot ──────────────────────────────────────────────────────────────
+updateValueLabels();
+connect();
+</script>
+
+</body>
+</html>

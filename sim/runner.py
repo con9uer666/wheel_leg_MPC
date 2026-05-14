@@ -92,8 +92,12 @@ class SimRunner:
                 self.buf["vx_ref"].append(cmd.vx_ref)
                 self.buf["L_l"].append(st["L_l"])
                 self.buf["L_r"].append(st["L_r"])
-                self.buf["L_ref_l"].append(L_ref_l)
-                self.buf["L_ref_r"].append(L_ref_r)
+                # MPC14 setpoints — older MPC10/LQR uses h_ref-driven L_ref
+                # (computed above as L_ref_l/L_ref_r) but MPC14 takes L_ref
+                # directly from cmd.  Log both so the UI shows whichever is
+                # active. cmd.L_ref_* is what MPC14 actually tracks.
+                self.buf["L_ref_l"].append(getattr(cmd, "L_ref_l", L_ref_l))
+                self.buf["L_ref_r"].append(getattr(cmd, "L_ref_r", L_ref_r))
                 self.buf["T_wl"].append(float(u[0]))
                 self.buf["T_wr"].append(float(u[1]))
                 self.buf["T_bl"].append(float(u[2]))
