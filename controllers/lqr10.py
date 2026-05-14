@@ -5,6 +5,10 @@ Uses the 4×10 K matrix pre-computed in MATLAB (LQR.m) at the locked operating
 point L_l = L_r = 0.15 m, with the physical parameters mirrored in
 controllers/params.py and models/wheel_legged.xml.
 
+All tunable parameters (K matrix, sign conventions, leg PD gains, torque
+limits) are loaded from config.yaml at import time. See controllers/params.py
+for physical robot constants.
+
 State:  x = [s, ds, phi, dphi, theta_ll, dtheta_ll, theta_lr, dtheta_lr, theta_b, dtheta_b]
 Input:  u = [T_wl, T_wr, T_bl, T_br]   (MATLAB convention)
 Output: MuJoCo ctrl = [T_bl, T_br, F_leg_L, F_leg_R, -T_wl, -T_wr]
@@ -15,47 +19,29 @@ import numpy as np
 from .params import G, R_W, L_MIN, L_MAX, M_W, M_L, M_B
 from sim.state import extract_state, get_joint_ids
 from sim.command import ControlCommand
+from config import CFG
 
 
-# ── K matrix from MATLAB LQR.m at L=0.15 m ───────────────────────────────
-# Source: 新建 文本文档.txt (user-provided icare output with MATLAB LQR.m's
-# Q = diag(10, 300, 5000, 1, 5000, 1, 5000, 1, 25000, 1)
-# R = diag(40, 40, 1, 1)).
-# Note: scipy.linalg.solve_continuous_are on the same A,B,Q,R produces a
-# different K (different sign convention / column scaling) that does not
-# transfer back to MuJoCo with the signs below — see tune_lqr.py for a
-# search harness that tunes Q/R in scipy-space if desired.
-# Rows: [T_wl, T_wr, T_bl, T_br]; columns: the 10-state vector.
-_K = np.array([
-    [-0.22494, -1.4517, -7.1367, -1.1802, -8.9838, -0.63815, -4.1141, -0.42777, -12.874, -1.4493],
-    [-0.22494, -1.4517,  7.1367,  1.1802, -4.1141, -0.42777, -8.9838, -0.63815, -12.874, -1.4493],
-    [ 1.7251,  10.998,  -21.51,  -3.7978, 67.911,   3.8477,  -7.9052,  0.33238, -74.067, -2.5312 ],
-    [ 1.7251,  10.998,   21.51,   3.7978, -7.9052,  0.33238, 67.911,   3.8477, -74.067, -2.5312 ],
-])
+# ── K matrix (loaded from config.yaml → lqr.K) ───────────────────────────
+# Source: MATLAB LQR.m icare output for Q=diag(10,300,5000,1,5000,1,5000,1,25000,1)
+# and R=diag(40,40,1,1) at L=0.15 m.
+_K = CFG.lqr.K.copy()
 
-# ── Actuator limits (must match wheel_legged.xml) ─────────────────────────
-_U_MAX = np.array([30.0, 30.0, 15.0, 15.0])    # [T_wl, T_wr, T_bl, T_br]
+# ── Actuator limits (loaded from config.yaml → actuator.U_MAX) ───────────
+_U_MAX = CFG.actuator.U_MAX.copy()
 
-# ── Leg PD gains ──────────────────────────────────────────────────────────
-# Conservative gains (matching MPC10 baseline). Higher K_P (>5000) gives
-# tighter leg-length tracking at rest but reduces robustness to disturbances
-# — pushes >25 N flip the robot. Keeping it soft trades 1 cm of static height
-# error for surviving ±100 N pushes.
-_K_LEG_P  = 2500.0
-_K_LEG_D  = 120.0
-_LEG_FF   = 0.0
+# ── Leg PD gains (loaded from config.yaml → leg_pd) ──────────────────────
+_K_LEG_P  = float(CFG.leg_pd.K_P)
+_K_LEG_D  = float(CFG.leg_pd.K_D)
+_LEG_FF   = float(CFG.leg_pd.FF)
 
-# ── Sign conventions ──────────────────────────────────────────────────────
-# Grid-searched over MuJoCo (after fixing extract_state to return ds with the
-# natural MuJoCo sign). Verified stable in both balance and 5° yaw-init tests.
-# Two equivalent solutions exist (global negation); this one keeps hip_out=+1
-# and wheel_out=-1 so the ctrl flow matches typical RoboMaster wheel-leg conventions.
-_SIGN_S        = +1
-_SIGN_PHI      = -1
-_SIGN_THETA_LL = +1
-_SIGN_THETA_B  = -1
-_SIGN_HIP_OUT  = +1   # ctrl_hip_L = +T_bl
-_SIGN_WHL_OUT  = -1   # ctrl_wheel_L = -T_wl
+# ── Sign conventions (loaded from config.yaml → signs) ───────────────────
+_SIGN_S        = int(CFG.signs.S)
+_SIGN_PHI      = int(CFG.signs.PHI)
+_SIGN_THETA_LL = int(CFG.signs.THETA_LL)
+_SIGN_THETA_B  = int(CFG.signs.THETA_B)
+_SIGN_HIP_OUT  = int(CFG.signs.HIP_OUT)
+_SIGN_WHL_OUT  = int(CFG.signs.WHL_OUT)
 
 
 def _leg_pd(L_ref: float, L_meas: float, L_dot: float) -> float:

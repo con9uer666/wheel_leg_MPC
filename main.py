@@ -57,17 +57,28 @@ def parse_args():
     p.add_argument("--controller", choices=["lqr", "mpc"], default="lqr",
                    help="Controller to use: lqr (default, fixed gain from MATLAB) "
                         "or mpc (online 20-step QP at 100 Hz).")
+    p.add_argument("--config", type=str, default=None,
+                   help="Path to a custom config.yaml. If omitted, the file "
+                        "next to main.py is used. The choice is logged at startup.")
     return p.parse_args()
 
 
 def main():
     args = parse_args()
 
+    # ── Load tuning config BEFORE any controller import ─────────────────
+    # Controllers read CFG at module import time, so we set the path early.
+    if args.config is not None:
+        os.environ["WHEEL_LEG_CONFIG"] = os.path.abspath(args.config)
+    from config import CFG
+    print(CFG.summary())
+    print()
+
     model_path = os.path.join(os.path.dirname(__file__), "models", "wheel_legged.xml")
 
     if args.controller == "mpc":
         from controllers.mpc10 import MPC10Controller
-        print("Initialising MPC controller (CVXPY+OSQP, first solve compiles QP)…")
+        print("Initialising MPC controller (native OSQP, warm-up solve)…")
         t_init = time.time()
         controller = MPC10Controller()
         print(f"MPC ready. N={controller.N}, DT={controller.DT}s "

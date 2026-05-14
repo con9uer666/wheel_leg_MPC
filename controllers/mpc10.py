@@ -28,23 +28,21 @@ from .params import R_W, L_MIN, L_MAX
 from .model10 import get_AB10, discretize
 from sim.state import extract_state, get_joint_ids
 from sim.command import ControlCommand
+from config import CFG
 
 
-# ── Sign conventions (now match controllers/lqr10.py exactly) ────────────
-# After fixing model10.py to match MATLAB's A, B exactly, scipy's continuous
-# ARE solution on (A, B, Q, R) agrees with MATLAB icare's K_user to 5
-# decimal places. The same LQR-validated MuJoCo signs therefore apply.
-_SIGN_S        = +1
-_SIGN_PHI      = -1
-_SIGN_THETA_LL = +1
-_SIGN_THETA_B  = -1
-_SIGN_HIP_OUT  = +1
-_SIGN_WHL_OUT  = -1
+# ── Sign conventions (loaded from config.yaml → signs section) ────────────
+_SIGN_S        = int(CFG.signs.S)
+_SIGN_PHI      = int(CFG.signs.PHI)
+_SIGN_THETA_LL = int(CFG.signs.THETA_LL)
+_SIGN_THETA_B  = int(CFG.signs.THETA_B)
+_SIGN_HIP_OUT  = int(CFG.signs.HIP_OUT)
+_SIGN_WHL_OUT  = int(CFG.signs.WHL_OUT)
 
-# ── Leg PD gains (must match controllers/lqr10.py exactly) ───────────────
-_K_LEG_P  = 2500.0
-_K_LEG_D  = 120.0
-_LEG_FF   = 0.0
+# ── Leg PD gains (loaded from config.yaml → leg_pd section) ──────────────
+_K_LEG_P  = float(CFG.leg_pd.K_P)
+_K_LEG_D  = float(CFG.leg_pd.K_D)
+_LEG_FF   = float(CFG.leg_pd.FF)
 
 
 def _leg_pd(L_ref: float, L_meas: float, L_dot: float) -> float:
@@ -62,16 +60,19 @@ def _compute_leg_refs(h_ref: float, theta_ll: float, theta_lr: float):
 
 
 class MPC10Controller:
-    """20-step linear MPC at 500 Hz, locked at L=0.15 m leg length."""
+    """20-step linear MPC at 500 Hz, locked at L=0.15 m leg length.
 
-    N     = 20
-    DT    = 0.002                        # 500 Hz solve rate (matches physics)
-    Q     = np.diag([10.0, 300.0, 5000.0, 1.0,
-                     5000.0, 1.0, 5000.0, 1.0,
-                     25000.0, 1.0])
-    R     = np.diag([40.0, 40.0, 1.0, 1.0])
-    U_MAX = np.array([30.0, 30.0, 15.0, 15.0])    # [T_wl, T_wr, T_bl, T_br]
-    LEG_LEN = 0.15
+    All tunable parameters (Q, R, N, DT, LEG_LEN, U_MAX, OSQP settings) are
+    loaded from config.yaml at import time. See controllers/params.py for
+    physical robot constants.
+    """
+
+    N       = int(CFG.mpc.N)
+    DT      = float(CFG.mpc.DT)
+    LEG_LEN = float(CFG.mpc.LEG_LEN)
+    Q       = np.diag(CFG.mpc.Q)
+    R       = np.diag(CFG.mpc.R)
+    U_MAX   = CFG.actuator.U_MAX.copy()    # [T_wl, T_wr, T_bl, T_br]
     NX = 10
     NU = 4
 
@@ -148,19 +149,18 @@ class MPC10Controller:
         self._n_z = n_z
         self._n_dyn = NX + N * NX  # equality rows
 
-        # Setup OSQP. eps=1e-3 keeps quality high without exploding iters;
-        # rho=0.5 + adaptive_rho=False holds warm-start stable.
+        # Setup OSQP using settings from config.yaml → osqp section.
         self._osqp = osqp.OSQP()
         self._osqp.setup(
             self._H, self._g_template, self._C, self._l, self._u,
             verbose=False,
-            max_iter=2000,
-            eps_abs=1e-3,
-            eps_rel=1e-3,
-            polish=False,
-            adaptive_rho=False,
-            rho=0.5,
-            warm_starting=True,
+            max_iter=int(CFG.osqp.max_iter),
+            eps_abs=float(CFG.osqp.eps_abs),
+            eps_rel=float(CFG.osqp.eps_rel),
+            polish=bool(CFG.osqp.polish),
+            adaptive_rho=bool(CFG.osqp.adaptive_rho),
+            rho=float(CFG.osqp.rho),
+            warm_starting=bool(CFG.osqp.warm_start),
         )
 
     def _solve(self, x0: np.ndarray, vx_ref: float, yaw_ref: float) -> np.ndarray:

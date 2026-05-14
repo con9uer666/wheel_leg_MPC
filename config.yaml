@@ -1,0 +1,88 @@
+# =============================================================================
+# Wheel-Leg Robot — MPC/LQR Tuning Parameters
+# =============================================================================
+# This file is loaded once at simulation startup. Edit values here and
+# restart the simulation; no code changes needed.
+#
+# DO NOT put physical robot parameters (mass, inertia, geometry) here —
+# those live in controllers/params.py.
+#
+# Sections:
+#   mpc       : Online MPC controller (controllers/mpc10.py)
+#   lqr       : LQR baseline controller (controllers/lqr10.py)
+#   leg_pd    : Leg-length PD law (shared by both controllers)
+#   actuator  : Torque limits applied to MPC outputs and reported to MuJoCo
+#   osqp      : OSQP solver settings for MPC
+# =============================================================================
+
+mpc:
+  # Horizon
+  N:       20         # number of prediction steps
+  DT:      0.002      # solver step (s) — 500 Hz; matches physics step
+  LEG_LEN: 0.15       # locked leg length used to build A, B (m)
+
+  # State weights Q (diag). Order matches the 10-state vector:
+  #   [s, ds, phi, dphi, theta_ll, dtheta_ll, theta_lr, dtheta_lr, theta_b, dtheta_b]
+  Q: [10.0, 300.0, 5000.0, 1.0,
+      5000.0, 1.0, 5000.0, 1.0,
+      25000.0, 1.0]
+
+  # Input weights R (diag). Order: [T_wl, T_wr, T_bl, T_br]
+  R: [40.0, 40.0, 1.0, 1.0]
+
+
+lqr:
+  # LQR uses a pre-computed K from MATLAB icare. We do not recompute it here,
+  # but expose the matrix so it can be swapped without touching code.
+  # Rows: [T_wl, T_wr, T_bl, T_br]; cols: 10-state vector.
+  K:
+    - [-0.22494, -1.4517, -7.1367, -1.1802, -8.9838, -0.63815, -4.1141, -0.42777, -12.874, -1.4493]
+    - [-0.22494, -1.4517,  7.1367,  1.1802, -4.1141, -0.42777, -8.9838, -0.63815, -12.874, -1.4493]
+    - [ 1.7251,  10.998,  -21.51,  -3.7978, 67.911,   3.8477,  -7.9052,  0.33238, -74.067, -2.5312]
+    - [ 1.7251,  10.998,   21.51,   3.7978, -7.9052,  0.33238, 67.911,   3.8477, -74.067, -2.5312]
+
+
+leg_pd:
+  # Leg length PD law: F = K_P * (L_ref - L) - K_D * L_dot + FF
+  # Shared by LQR and MPC. Lower K_P (~2500) gives more compliance under
+  # disturbance; higher K_P (~7000) tracks the L=0.15 setpoint tighter at
+  # rest but couples with the hip LQR and reduces push-resistance.
+  K_P: 2500.0
+  K_D: 120.0
+  FF:  0.0
+
+
+actuator:
+  # Torque limits applied as both QP constraints and post-clip on LQR output.
+  # Order: [T_wl, T_wr, T_bl, T_br]. Must match the actuator forcerange in
+  # models/wheel_legged.xml.
+  U_MAX: [30.0, 30.0, 15.0, 15.0]
+
+
+osqp:
+  # Solver settings for MPC. eps=1e-3 + rho=0.5 + warm_starting gives
+  # P50≈0.3 ms / P99≈5 ms latency on this host. Tighter eps slows down a lot
+  # without measurable control improvement. polish=False saves ~0.5 ms.
+  max_iter:     2000
+  eps_abs:      1.0e-3
+  eps_rel:      1.0e-3
+  rho:          0.5
+  adaptive_rho: false
+  polish:       false
+  warm_start:   true
+
+
+signs:
+  # State-vector polarity: each value should be ±1. Shared by LQR and MPC.
+  # These map MuJoCo's natural conventions to the MATLAB LQR.m state space
+  # that the K matrix (and Q/R) were designed for.
+  #
+  # Output polarity: hip_out / wheel_out are applied when writing MuJoCo's
+  # ctrl vector. hip_out=+1 means ctrl_hip_L = +T_bl_matlab; whl_out=-1
+  # means ctrl_wheel_L = -T_wl_matlab. Verified by MuJoCo grid search.
+  S:        +1   # x[0,1]  = SIGN_S        * (s, ds)
+  PHI:      -1   # x[2,3]  = SIGN_PHI      * (yaw, dyaw)
+  THETA_LL: +1   # x[4..7] = SIGN_THETA_LL * (hip_L, dhip_L, hip_R, dhip_R)
+  THETA_B:  -1   # x[8,9]  = SIGN_THETA_B  * (pitch, dpitch)
+  HIP_OUT:  +1   # ctrl_hip   = HIP_OUT  * T_bl
+  WHL_OUT:  -1   # ctrl_wheel = WHL_OUT * T_wl
