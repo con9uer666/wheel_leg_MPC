@@ -1,0 +1,112 @@
+<mujoco model="wheel_leg">
+  <compiler angle="radian" autolimits="true"/>
+
+  <option gravity="0 0 -9.81" timestep="0.002"/>
+
+  <default>
+    <joint damping="0.1"/>
+    <geom contype="1" conaffinity="1" friction="0.8 0.02 0.01"/>
+  </default>
+
+  <asset>
+    <texture name="grid" type="2d" builtin="checker" width="512" height="512"
+             rgb1="0.85 0.85 0.85" rgb2="0.65 0.65 0.65"/>
+    <material name="grid"      texture="grid" texrepeat="4 4" reflectance="0.1"/>
+    <material name="body_mat"  rgba="0.3 0.5 0.8 1"/>
+    <material name="leg_mat"   rgba="0.7 0.7 0.7 1"/>
+    <material name="wheel_mat" rgba="0.2 0.2 0.2 1"/>
+  </asset>
+
+  <worldbody>
+    <light pos="0 0 3" dir="0 0 -1" diffuse="0.8 0.8 0.8"/>
+    <geom name="floor" type="plane" size="5 5 0.05" material="grid"
+          friction="1.0 0.1 0.05" contype="1" conaffinity="1"/>
+
+    <!--
+      Trunk freejoint origin = hip joint axis centre.
+      MATLAB l_c = -0.01066729 m → body COM is below the hip axis.
+      Inertia values (m_b, I_b, I_z) from LQR.m.
+    -->
+    <body name="trunk" pos="0 0 0.21">
+      <freejoint name="root"/>
+      <inertial pos="0 0 -0.01066729" mass="12.634"
+                diaginertia="0.40 0.30949668 0.62018662"/>
+      <geom name="trunk_geom" type="box" size="0.18 0.10 0.06"
+            pos="0 0 -0.01066729" material="body_mat" mass="0"/>
+
+      <!-- ── Left leg assembly (y = +0.19242 m) ─────────────────────── -->
+      <body name="leg_L" pos="0 0.19242 0">
+        <!-- Hip joint: revolute about y-axis -->
+        <joint name="hip_L" type="hinge" axis="0 1 0"
+               range="-1.4 1.4" damping="0.5"/>
+        <!-- Leg pole: 0.14 m fixed + 0.04 m prismatic range.
+             COM at l_bl = 0.07199846 m below hip (MATLAB L=0.15 row).
+             m_l, I_ll from LQR.m. -->
+        <inertial pos="0 0 -0.07199846" mass="2.47507"
+                  diaginertia="0.05570304 0.05570304 0.001"/>
+        <geom name="pole_L" type="cylinder" size="0.015 0.07"
+              pos="0 0 -0.07" material="leg_mat" mass="0"/>
+
+        <!-- Prismatic extension (0 to 0.04 m along -z); leg PD locks it at ~0.01 -->
+        <body name="ext_L" pos="0 0 -0.14">
+          <joint name="leg_L" type="slide" axis="0 0 -1"
+                 range="0 0.04" damping="5.0"/>
+          <inertial pos="0 0 0" mass="0.05"
+                    diaginertia="1e-5 1e-5 1e-5"/>
+          <geom name="ext_geom_L" type="cylinder" size="0.012 0.020"
+                pos="0 0 0" material="leg_mat" mass="0"/>
+
+          <!-- Drive wheel: r = 0.06 m, m = 0.615 kg (MATLAB) -->
+          <body name="wheel_L" pos="0 0 0">
+            <joint name="wheel_L" type="hinge" axis="0 1 0" damping="0.05"/>
+            <inertial pos="0 0 0" mass="0.615"
+                      diaginertia="5.5e-4 1.07e-3 5.5e-4"/>
+            <geom name="wheel_geom_L" type="cylinder" size="0.06 0.03"
+                  pos="0 0 0" euler="1.5708 0 0"
+                  friction="1.5 0.05 0.01" material="wheel_mat" mass="0"/>
+          </body>
+        </body>
+      </body>
+
+      <!-- ── Right leg assembly (y = -0.19242 m) ────────────────────── -->
+      <body name="leg_R" pos="0 -0.19242 0">
+        <joint name="hip_R" type="hinge" axis="0 1 0"
+               range="-1.4 1.4" damping="0.5"/>
+        <inertial pos="0 0 -0.07199846" mass="2.47507"
+                  diaginertia="0.05570304 0.05570304 0.001"/>
+        <geom name="pole_R" type="cylinder" size="0.015 0.07"
+              pos="0 0 -0.07" material="leg_mat" mass="0"/>
+
+        <body name="ext_R" pos="0 0 -0.14">
+          <joint name="leg_R" type="slide" axis="0 0 -1"
+                 range="0 0.04" damping="5.0"/>
+          <inertial pos="0 0 0" mass="0.05"
+                    diaginertia="1e-5 1e-5 1e-5"/>
+          <geom name="ext_geom_R" type="cylinder" size="0.012 0.020"
+                pos="0 0 0" material="leg_mat" mass="0"/>
+
+          <body name="wheel_R" pos="0 0 0">
+            <joint name="wheel_R" type="hinge" axis="0 1 0" damping="0.05"/>
+            <inertial pos="0 0 0" mass="0.615"
+                      diaginertia="5.5e-4 1.07e-3 5.5e-4"/>
+            <geom name="wheel_geom_R" type="cylinder" size="0.06 0.03"
+                  pos="0 0 0" euler="1.5708 0 0"
+                  friction="1.5 0.05 0.01" material="wheel_mat" mass="0"/>
+          </body>
+        </body>
+      </body>
+
+    </body><!-- trunk -->
+  </worldbody>
+
+  <!-- ctrl order: [hip_L, hip_R, leg_L, leg_R, wheel_L, wheel_R] -->
+  <actuator>
+    <motor name="hip_L"   joint="hip_L"   gear="1" forcerange="-15 15"/>
+    <motor name="hip_R"   joint="hip_R"   gear="1" forcerange="-15 15"/>
+    <motor name="leg_L"   joint="leg_L"   gear="1" forcerange="-200 200"/>
+    <motor name="leg_R"   joint="leg_R"   gear="1" forcerange="-200 200"/>
+    <motor name="wheel_L" joint="wheel_L" gear="1" forcerange="-30 30"/>
+    <motor name="wheel_R" joint="wheel_R" gear="1" forcerange="-30 30"/>
+  </actuator>
+
+</mujoco>
