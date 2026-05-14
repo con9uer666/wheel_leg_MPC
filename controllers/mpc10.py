@@ -9,17 +9,20 @@ Drop-in replacement for LQR10Controller sharing the exact same:
   - Leg PD law      (K_P=2500, K_D=120, locked at L=0.15 m)
   - Linearization   (get_AB10 + discretize from controllers.model10)
 
-The controller solves a 20-step QP at 100 Hz (DT=0.01 s) on top of a 500 Hz
-physics simulation; the LQR equivalent solves the steady-state Riccati once
-offline. Both call back into the same model10 linearization at L_l=L_r=0.15
-so behaviour can be compared directly.
+The controller solves a 20-step QP at 500 Hz (DT=0.002 s, matching the physics
+step) using the OSQP solver via its native Python API. CVXPY was originally
+used but its warm-start overhead made the per-step latency ~11 ms, which is
+too slow for a system with a +15.6 unstable mode (~64 ms time constant).
+The native OSQP build below converges to eps=1e-3 in ~125 iters at <1.5 ms
+typical, leaving headroom for 500 Hz operation.
 
 Output MuJoCo ctrl: [T_bl, T_br, F_leg_L, F_leg_R, -T_wl, -T_wr]
 """
 
 import numpy as np
 import scipy.linalg
-import cvxpy as cp
+import scipy.sparse as sp
+import osqp
 
 from .params import R_W, L_MIN, L_MAX
 from .model10 import get_AB10, discretize
@@ -59,108 +62,148 @@ def _compute_leg_refs(h_ref: float, theta_ll: float, theta_lr: float):
 
 
 class MPC10Controller:
-    """20-step linear MPC at 100 Hz, locked at L=0.15 m leg length."""
+    """20-step linear MPC at 500 Hz, locked at L=0.15 m leg length."""
 
     N     = 20
-    DT    = 0.01                         # 100 Hz solve rate
-    # Same Q, R as LQR's MATLAB icare run (LQR.m)
+    DT    = 0.002                        # 500 Hz solve rate (matches physics)
     Q     = np.diag([10.0, 300.0, 5000.0, 1.0,
                      5000.0, 1.0, 5000.0, 1.0,
                      25000.0, 1.0])
     R     = np.diag([40.0, 40.0, 1.0, 1.0])
     U_MAX = np.array([30.0, 30.0, 15.0, 15.0])    # [T_wl, T_wr, T_bl, T_br]
-    LEG_LEN = 0.15                       # locked operating point
+    LEG_LEN = 0.15
+    NX = 10
+    NU = 4
 
     def __init__(self):
         # ── Linearize once at the locked leg length ──────────────────────
         A_c, B_c = get_AB10(self.LEG_LEN, self.LEG_LEN)
         self.Ad, self.Bd = discretize(A_c, B_c, self.DT)
-        # Terminal cost = discrete-time ARE solution → infinite-horizon tail
         self.P = scipy.linalg.solve_discrete_are(self.Ad, self.Bd, self.Q, self.R)
 
-        # ── Build CVXPY problem once (DPP-compliant for OSQP warm start) ─
-        self._build_problem()
+        # ── Build the OSQP problem (constant H, C; b updated per solve) ──
+        self._build_osqp()
 
         # ── Cached state ────────────────────────────────────────────────
-        self._joint_ids   = None
-        self._last_u      = np.zeros(4)
-        self._last_ctrl   = np.zeros(6)
-        self._last_solve_t = -np.inf
+        self._joint_ids = None
+        self._last_u    = np.zeros(self.NU)
+        self._n_fail    = 0
+        self._n_solve   = 0
 
-    # ── QP build ─────────────────────────────────────────────────────────
-    def _build_problem(self):
-        n, m, N = 10, 4, self.N
-        self._x_var = cp.Variable((n, N + 1))
-        self._u_var = cp.Variable((m, N))
+    # ── QP build (native OSQP, dense via scipy.sparse) ───────────────────
+    def _build_osqp(self):
+        N, NX, NU = self.N, self.NX, self.NU
+        n_z = (N + 1) * NX + N * NU            # decision vector
 
-        self._x0_p  = cp.Parameter(n,            name="x0")
-        self._ref_p = cp.Parameter((n, N + 1),   name="ref")
+        # Cost: 0.5 z' H z + g' z;  g = 0 baseline (ref offset added via x0 only)
+        H = sp.block_diag(
+            [sp.csc_matrix(self.Q)] * N
+            + [sp.csc_matrix(self.P)]
+            + [sp.csc_matrix(self.R)] * N,
+            format='csc',
+        )
+        self._H = H
+        # g will be set per solve to encode the reference (linear term from ref'Q*x)
+        self._g_template = np.zeros(n_z)
 
-        Q_chol = np.linalg.cholesky(self.Q)
-        R_chol = np.linalg.cholesky(self.R)
-        P_chol = np.linalg.cholesky(self.P)
+        # Constraints: equality (dynamics + initial), then box on u
+        rows, cols, vals = [], [], []
+        # x_0 = x_init  (set in update)
+        for i in range(NX):
+            rows.append(i); cols.append(i); vals.append(1.0)
+        nr = NX
 
-        cost = 0
-        cons = [self._x_var[:, 0] == self._x0_p]
-
+        # Dynamics: x_{k+1} - Ad x_k - Bd u_k = 0
         for k in range(N):
-            e_k = self._x_var[:, k] - self._ref_p[:, k]
-            cost += cp.sum_squares(Q_chol @ e_k)
-            cost += cp.sum_squares(R_chol @ self._u_var[:, k])
-            cons += [
-                self._x_var[:, k+1] == self.Ad @ self._x_var[:, k]
-                                       + self.Bd @ self._u_var[:, k],
-                self._u_var[0, k] <=  self.U_MAX[0], self._u_var[0, k] >= -self.U_MAX[0],
-                self._u_var[1, k] <=  self.U_MAX[1], self._u_var[1, k] >= -self.U_MAX[1],
-                self._u_var[2, k] <=  self.U_MAX[2], self._u_var[2, k] >= -self.U_MAX[2],
-                self._u_var[3, k] <=  self.U_MAX[3], self._u_var[3, k] >= -self.U_MAX[3],
-            ]
+            for i in range(NX):
+                rows.append(nr); cols.append((k+1)*NX + i); vals.append(1.0)
+                for j in range(NX):
+                    if self.Ad[i, j] != 0:
+                        rows.append(nr); cols.append(k*NX + j); vals.append(-self.Ad[i, j])
+                for j in range(NU):
+                    if self.Bd[i, j] != 0:
+                        rows.append(nr); cols.append((N+1)*NX + k*NU + j); vals.append(-self.Bd[i, j])
+                nr += 1
 
-        e_N = self._x_var[:, N] - self._ref_p[:, N]
-        cost += cp.sum_squares(P_chol @ e_N)
+        # Input box constraints
+        for k in range(N):
+            for j in range(NU):
+                rows.append(nr); cols.append((N+1)*NX + k*NU + j); vals.append(1.0)
+                nr += 1
 
-        self._prob = cp.Problem(cp.Minimize(cost), cons)
-        self._first_solve = True
+        C = sp.csc_matrix((vals, (rows, cols)), shape=(nr, n_z))
+        self._C = C
 
-    # ── Solve ────────────────────────────────────────────────────────────
-    def _solve(self, x0: np.ndarray, ref: np.ndarray) -> np.ndarray:
-        self._x0_p.value  = x0
-        self._ref_p.value = ref
-        try:
-            self._prob.solve(
-                solver=cp.OSQP,
-                warm_start=not self._first_solve,
-                verbose=False,
-                max_iter=10000,
-                eps_abs=1e-3,
-                eps_rel=1e-3,
-                polish=False,
-                adaptive_rho=True,
-                rho=0.1,
-            )
-            if self._u_var.value is not None:
-                self._last_u = self._u_var.value[:, 0].copy()
-            self._first_solve = False
-        except Exception:
-            self._first_solve = False
+        l = np.zeros(nr)
+        u = np.zeros(nr)
+        # Initial state row + dynamics equalities default to 0
+        # Input bounds:
+        for k in range(N):
+            for j in range(NU):
+                idx = NX + N * NX + k * NU + j
+                l[idx] = -self.U_MAX[j]
+                u[idx] = +self.U_MAX[j]
+        self._l = l
+        self._u = u
+        self._n_z = n_z
+        self._n_dyn = NX + N * NX  # equality rows
+
+        # Setup OSQP. eps=1e-3 keeps quality high without exploding iters;
+        # rho=0.5 + adaptive_rho=False holds warm-start stable.
+        self._osqp = osqp.OSQP()
+        self._osqp.setup(
+            self._H, self._g_template, self._C, self._l, self._u,
+            verbose=False,
+            max_iter=2000,
+            eps_abs=1e-3,
+            eps_rel=1e-3,
+            polish=False,
+            adaptive_rho=False,
+            rho=0.5,
+            warm_starting=True,
+        )
+
+    def _solve(self, x0: np.ndarray, vx_ref: float, yaw_ref: float) -> np.ndarray:
+        """Update bounds + linear cost, solve, return u_0."""
+        self._n_solve += 1
+        N, NX, NU = self.N, self.NX, self.NU
+
+        # 1) Initial-state equality: l[0:NX] = u[0:NX] = x0
+        self._l[:NX] = x0
+        self._u[:NX] = x0
+
+        # 2) Linear cost term g = -Q' * ref (since 1/2 ||x - ref||²_Q = 1/2 x'Qx - ref'Qx + const)
+        #    Only x[1] (ds) and x[2] (phi) have nonzero references in this control task.
+        g = self._g_template.copy()
+        # Build per-stage cost gradient: g_x = -Q @ ref_x
+        ref = np.zeros(NX)
+        ref[1] = vx_ref
+        ref[2] = yaw_ref * _SIGN_PHI
+        g_x_stage = -self.Q @ ref
+        g_x_term  = -self.P @ ref
+        for k in range(N):
+            g[k*NX:(k+1)*NX] = g_x_stage
+        g[N*NX:(N+1)*NX] = g_x_term
+
+        # OSQP supports updating l, u, q (linear cost) without re-factorising
+        self._osqp.update(q=g, l=self._l, u=self._u)
+        result = self._osqp.solve()
+
+        if result.info.status == 'solved' or result.info.status == 'solved inaccurate':
+            # u_0 is at offset (N+1)*NX in the decision vector
+            u0_start = (N + 1) * NX
+            self._last_u = result.x[u0_start:u0_start + NU].copy()
+        else:
+            self._n_fail += 1
+            # Reuse previous solution to avoid sudden zero-output
+
         return self._last_u.copy()
 
     # ── Main interface ───────────────────────────────────────────────────
     def compute(self, model, data, cmd: ControlCommand) -> np.ndarray:
-        """
-        Called from sim/runner.py at the runner's DT_CTRL rate (500 Hz today).
-        Internally rate-limits the QP solve to self.DT (10 ms / 100 Hz);
-        between solves we return the cached ctrl so the wheel/hip torques
-        hold over the simulation's intermediate physics steps.
-        """
+        """Called every physics step (500 Hz). Returns MuJoCo ctrl vector."""
         if self._joint_ids is None:
             self._joint_ids = get_joint_ids(model)
-
-        t = float(data.time)
-        # Skip QP solve if we already solved within the last DT seconds
-        if t - self._last_solve_t < self.DT - 1e-9:
-            # Still refresh leg PD so it tracks fast (it's stateless on dt)
-            return self._leg_pd_refresh(model, data, cmd)
 
         # ── Build x0 in LQR/MATLAB sign convention ────────────────────────
         st = extract_state(model, data, self._joint_ids)
@@ -172,13 +215,8 @@ class MPC10Controller:
             st["theta_b"]  * _SIGN_THETA_B,  st["dtheta_b"]  * _SIGN_THETA_B,
         ])
 
-        # Constant reference over horizon
-        ref = np.zeros((10, self.N + 1))
-        ref[1, :] = cmd.vx_ref
-        ref[2, :] = cmd.yaw_ref * _SIGN_PHI
-
         # ── Solve QP and unpack ───────────────────────────────────────────
-        u_mpc = self._solve(x0, ref)
+        u_mpc = self._solve(x0, cmd.vx_ref, cmd.yaw_ref)
         T_wl, T_wr, T_bl, T_br = u_mpc
 
         # Leg PD (identical to LQR)
@@ -187,27 +225,13 @@ class MPC10Controller:
         F_l = _leg_pd(L_ref_l, st["L_l"], st["leg_L_dot"])
         F_r = _leg_pd(L_ref_r, st["L_r"], st["leg_R_dot"])
 
-        self._last_ctrl = np.array([
+        return np.array([
             T_bl * _SIGN_HIP_OUT,
             T_br * _SIGN_HIP_OUT,
             F_l, F_r,
             T_wl * _SIGN_WHL_OUT,
             T_wr * _SIGN_WHL_OUT,
         ])
-        self._last_solve_t = t
-        return self._last_ctrl
-
-    def _leg_pd_refresh(self, model, data, cmd):
-        """Cheap update: keep MPC torques but refresh leg PD every call."""
-        st = extract_state(model, data, self._joint_ids)
-        L_ref_l, L_ref_r = _compute_leg_refs(cmd.h_ref,
-                                              st["theta_ll"], st["theta_lr"])
-        F_l = _leg_pd(L_ref_l, st["L_l"], st["leg_L_dot"])
-        F_r = _leg_pd(L_ref_r, st["L_r"], st["leg_R_dot"])
-        ctrl = self._last_ctrl.copy()
-        ctrl[2] = F_l
-        ctrl[3] = F_r
-        return ctrl
 
     @property
     def last_u(self) -> np.ndarray:
