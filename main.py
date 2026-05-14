@@ -32,7 +32,6 @@ import numpy as np
 # Add project root to path so sub-packages resolve correctly
 sys.path.insert(0, os.path.dirname(__file__))
 
-from controllers.lqr10 import LQR10Controller
 from sim.runner import SimRunner
 from sim.command import ControlCommand
 
@@ -55,6 +54,9 @@ def parse_args():
     p.add_argument("--no-monitor", action="store_true",
                    help="Disable the terminal-side LQR state monitor "
                         "(enabled by default when viewer is up).")
+    p.add_argument("--controller", choices=["lqr", "mpc"], default="lqr",
+                   help="Controller to use: lqr (default, fixed gain from MATLAB) "
+                        "or mpc (online 20-step QP at 100 Hz).")
     return p.parse_args()
 
 
@@ -63,9 +65,19 @@ def main():
 
     model_path = os.path.join(os.path.dirname(__file__), "models", "wheel_legged.xml")
 
-    print("Initialising LQR controller (pre-computed K matrix from MATLAB)…")
-    controller = LQR10Controller()
-    print(f"LQR ready. K shape: {controller.K.shape},  max|K|={np.abs(controller.K).max():.2f}")
+    if args.controller == "mpc":
+        from controllers.mpc10 import MPC10Controller
+        print("Initialising MPC controller (CVXPY+OSQP, first solve compiles QP)…")
+        t_init = time.time()
+        controller = MPC10Controller()
+        print(f"MPC ready. N={controller.N}, DT={controller.DT}s "
+              f"({1/controller.DT:.0f} Hz),  init={time.time()-t_init:.2f}s")
+    else:
+        from controllers.lqr10 import LQR10Controller
+        print("Initialising LQR controller (pre-computed K matrix from MATLAB)…")
+        controller = LQR10Controller()
+        print(f"LQR ready. K shape: {controller.K.shape},  "
+              f"max|K|={np.abs(controller.K).max():.2f}")
 
     cmd = ControlCommand(vx_ref=args.vx_ref, h_ref=args.h_ref)
     runner = SimRunner(model_path, controller)

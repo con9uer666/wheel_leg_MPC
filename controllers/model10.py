@@ -88,27 +88,28 @@ def _compute_AB(l_l, l_wl, l_bl, I_ll, l_r, l_wr, l_br, I_lr):
 
     # ── RHS dependence on inputs [T_wl, T_wr, T_bl, T_br] ───────────────
     # dRHS_dinput:  5×4
+    # Each LQR.m eqn is written as  M_row @ acc + (RHS terms in inputs/angles) = 0,
+    # so moving inputs to the right we get  M_row @ acc = -(T-terms in eqn).
     dRHS_dinput = np.zeros((5, 4))
-    # eqn1: -T_bl coefficient (RHS sign: +T_bl → moves to RHS as -T_bl)
-    # Original: ... + T_bl - T_wl*(1+l_l/R_w) = 0
-    # => M@acc = -(T_bl - T_wl*(1+l_l/R_w))
-    dRHS_dinput[0, 0] =  (1 + l_l / R_w)   # T_wl coefficient on RHS
-    dRHS_dinput[0, 2] = -1.0                # T_bl coefficient on RHS
-    # eqn2: similarly
+    # eqn1: ... + T_bl - T_wl*(1 + l_l/R_w) = 0
+    # → M_row1 @ acc = -T_bl + T_wl*(1 + l_l/R_w)
+    dRHS_dinput[0, 0] =  (1 + l_l / R_w)
+    dRHS_dinput[0, 2] = -1.0
+    # eqn2: ... + T_br - T_wr*(1 + l_r/R_w) = 0
     dRHS_dinput[1, 1] =  (1 + l_r / R_w)
     dRHS_dinput[1, 3] = -1.0
-    # eqn3: +T_wl + T_wr on RHS  (moved to RHS: negative of the original eqn)
-    # Original: ... + T_wl + T_wr = 0  => M@acc = T_wl + T_wr  (wrong sign?)
-    # Careful: eqn3 = -(c3)*ddw_l - (c3)*ddw_r - ... + T_wl + T_wr = 0
-    # => M[2,:] @ acc = T_wl + T_wr
-    dRHS_dinput[2, 0] =  1.0
-    dRHS_dinput[2, 1] =  1.0
-    # eqn4: -(T_wl+T_wr)*l_c/R_w - (T_bl+T_br) → RHS
+    # eqn3: ... + T_wl + T_wr = 0  → RHS = -(T_wl + T_wr)
+    # (Previously had +1, +1 here — a sign bug that broke B rows 2 and below.)
+    dRHS_dinput[2, 0] = -1.0
+    dRHS_dinput[2, 1] = -1.0
+    # eqn4: ... - (T_wl+T_wr)*l_c/R_w - (T_bl+T_br) = 0
+    # → RHS = +(T_wl+T_wr)*l_c/R_w + (T_bl+T_br)
     dRHS_dinput[3, 0] =  l_c / R_w
     dRHS_dinput[3, 1] =  l_c / R_w
     dRHS_dinput[3, 2] =  1.0
     dRHS_dinput[3, 3] =  1.0
-    # eqn5: -T_wl*R_l/R_w + T_wr*R_l/R_w → RHS
+    # eqn5: ... - T_wl*R_l/R_w + T_wr*R_l/R_w = 0
+    # → RHS = +T_wl*R_l/R_w - T_wr*R_l/R_w
     dRHS_dinput[4, 0] =  R_l / R_w
     dRHS_dinput[4, 1] = -R_l / R_w
 
@@ -130,9 +131,13 @@ def _compute_AB(l_l, l_wl, l_bl, I_ll, l_r, l_wr, l_br, I_lr):
     for col_j, state_col in enumerate([4, 6, 8]):
         # Row 1: ds_dot = R_w/2*(dd_wl + dd_wr)
         A[1, state_col] = R_w / 2 * (J_A[0, col_j] + J_A[1, col_j])
-        # Row 3: dphi_dot (yaw) – from kinematic relation
+        # Row 3: dphi_dot (yaw) – matches LQR.m line 65:
+        #   A(4,p) = R_w/(2*R_l) * (-J_A(1) + J_A(2))
+        #           - l_l/(2*R_l) * J_A(3) + l_r/(2*R_l) * J_A(4)
+        # NOTE: previously had the sign wrong on the wheel-pair difference,
+        # which made the yaw row of A diverge from MATLAB by ~96 (broke MPC).
         A[3, state_col] = (
-            R_w / (2 * R_l) * (J_A[0, col_j] - J_A[1, col_j])
+            R_w / (2 * R_l) * (-J_A[0, col_j] + J_A[1, col_j])
             - l_l / (2 * R_l) * J_A[2, col_j]
             + l_r / (2 * R_l) * J_A[3, col_j]
         )
@@ -147,8 +152,9 @@ def _compute_AB(l_l, l_wl, l_bl, I_ll, l_r, l_wr, l_br, I_lr):
     B = np.zeros((10, 4))
     for h in range(4):
         B[1, h] = R_w / 2 * (J_B[0, h] + J_B[1, h])
+        # Row 3 (dphi_dot) – matches LQR.m line 84 with same sign fix as A above.
         B[3, h] = (
-            R_w / (2 * R_l) * (J_B[0, h] - J_B[1, h])
+            R_w / (2 * R_l) * (-J_B[0, h] + J_B[1, h])
             - l_l / (2 * R_l) * J_B[2, h]
             + l_r / (2 * R_l) * J_B[3, h]
         )

@@ -212,11 +212,41 @@ lqr_R = [40,      0,       0,       0;
 
 % 如果需要使用此部分，请去掉120-127行以及215-218行注释，然后将224行之后的所有代码注释掉，
 % 或者点击左侧数字"224"让程序只运行行之前的内容并停止
+
+% ── 临时：打印 L=0.15 m 时的 A、B 矩阵 ──
+A_ac_num = double(subs(A,[R_w R_l l_l l_r l_wl l_wr l_bl l_br l_c m_w m_l m_b I_w I_ll I_lr I_b I_z g], ...
+    [R_w_ac R_l_ac l_l_ac l_r_ac l_wl_ac l_wr_ac l_bl_ac l_br_ac l_c_ac ...
+    m_w_ac m_l_ac m_b_ac I_w_ac I_ll_ac I_lr_ac I_b_ac I_z_ac g_ac]));
+B_ac_num = double(subs(B,[R_w R_l l_l l_r l_wl l_wr l_bl l_br l_c m_w m_l m_b I_w I_ll I_lr I_b I_z g], ...
+    [R_w_ac R_l_ac l_l_ac l_r_ac l_wl_ac l_wr_ac l_bl_ac l_br_ac l_c_ac ...
+    m_w_ac m_l_ac m_b_ac I_w_ac I_ll_ac I_lr_ac I_b_ac I_z_ac g_ac]));
+
+disp('=== A matrix (10x10) ==='); disp(A_ac_num);
+disp('=== B matrix (10x4) ===');  disp(B_ac_num);
+
+% 用更精确的格式输出，便于直接复制
+fprintf('\nA_ac_num =\n');
+for i = 1:10
+    fprintf('%.10g  ', A_ac_num(i,:));
+    fprintf('\n');
+end
+fprintf('\nB_ac_num =\n');
+for i = 1:10
+    fprintf('%.10g  ', B_ac_num(i,:));
+    fprintf('\n');
+end
+
+return  % ← 关键：到此为止，不跑后面的双重循环
+
+
 K = get_K_from_LQR(R_w,R_l,l_l,l_r,l_wl,l_wr,l_bl,l_br,l_c,m_w,m_l,m_b,I_w,I_ll,I_lr,I_b,I_z,g, ...
             R_w_ac,R_l_ac,l_l_ac,l_r_ac,l_wl_ac,l_wr_ac,l_bl_ac,l_br_ac, ...
             l_c_ac,m_w_ac,m_l_ac,m_b_ac,I_w_ac,I_ll_ac,I_lr_ac,I_b_ac,I_z_ac,g_ac, ...
             A,B,lqr_Q,lqr_R)
 K = sprintf([strjoin(repmat({'%.5g'},1,size(K,2)),',  ') '\n'], K.')
+% 
+% disp('--- A matrix ---'); disp(double(A_ac));
+% disp('--- B matrix ---'); disp(double(B_ac));
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%Step 3：拟合控制律函数%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -315,6 +345,10 @@ function K = get_K_from_LQR(R_w,R_l,l_l,l_r,l_wl,l_wr,l_bl,l_br,l_c,m_w,m_l,m_b,
 
     % 根据以上信息和提供的矩阵Q和R求解Riccati方程，获得增益矩阵K
     % P为Riccati方程的解，矩阵L可以无视
+
+
+
+
     [P,K,L_k] = icare(A_ac,B_ac,lqr_Q,lqr_R,[],[],[]);
 end
 
